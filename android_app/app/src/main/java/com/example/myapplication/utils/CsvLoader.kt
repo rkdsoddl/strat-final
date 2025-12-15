@@ -14,7 +14,6 @@ class CsvLoader(private val context: Context) {
             val reader = BufferedReader(InputStreamReader(inputStream))
 
             reader.forEachLine { line ->
-                // 콤마로 쪼개서 로그 찍어보기
                 val data = line.split(",")
                 Log.d("CsvCheck", "읽은 데이터: $data")
             }

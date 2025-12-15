@@ -14,7 +14,7 @@ interface UserDao {
     @Query("SELECT * FROM user_logs")
     suspend fun getAllLogs(): List<UserEntity>
 
-    // 3. 싹 다 지우기 (초기화용)
+    // 3. 지우기 (초기화용)
     @Query("DELETE FROM user_logs")
     suspend fun clearAll()
 }

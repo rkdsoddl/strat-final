@@ -1,7 +1,6 @@
 package com.example.myapplication
 
 import android.app.AppOpsManager
-import android.app.usage.UsageStatsManager
 import android.content.Context
 import android.content.Intent
 import android.os.Bundle
@@ -22,26 +21,39 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import com.example.myapplication.data.api.AnalyzeRequest
+import com.example.myapplication.data.api.AnalyzeResponse
+import com.example.myapplication.data.api.RetrofitClient
+import com.example.myapplication.data.db.AppDatabase
 import com.example.myapplication.ui.theme.MyApplicationTheme
-import java.util.Calendar
+import com.example.myapplication.utils.MockDataGenerator
+import com.example.myapplication.utils.UsageManager
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import retrofit2.Call
+import retrofit2.Callback
+import retrofit2.Response
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+
+        // DB 인스턴스 미리 생성
+        val db = AppDatabase.getDatabase(this)
+
         setContent {
             MyApplicationTheme {
                 Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
-                    // 메인 화면 UI 함수 호출
-                    MainScreen(modifier = Modifier.padding(innerPadding))
+                    MainScreen(
+                        db = db,
+                        modifier = Modifier.padding(innerPadding)
+                    )
                 }
             }
         }
@@ -49,101 +61,130 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-fun MainScreen(modifier: Modifier = Modifier) {
+fun MainScreen(db: AppDatabase, modifier: Modifier = Modifier) {
     val context = LocalContext.current
-    // 화면에 보여줄 텍스트
-    var usageResult by remember { mutableStateOf("버튼을 눌러 사용 시간을 확인하세요.") }
 
     Column(
         modifier = modifier.fillMaxSize(),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
-        // 1. 권한 체크 및 설정 이동 버튼
-        Button(onClick = {
-            checkAndRequestPermissions(context)
-        }) {
-            Text(text = "권한 설정하러 가기 (필수)")
+        // 1. 권한 설정 버튼 (기존 유지)
+        Button(onClick = { checkAndRequestPermissions(context) }) {
+            Text("1. 권한 설정 (필수)")
         }
 
-        Spacer(modifier = Modifier.height(20.dp))
+        Spacer(modifier = Modifier.height(10.dp))
 
-        // 2. 유튜브 사용 시간 가져오기 버튼
+        // 2. 가상 데이터 생성 버튼 (Mock)
         Button(onClick = {
-            // 권한이 있는지 먼저 확인
+            CoroutineScope(Dispatchers.IO).launch {
+                MockDataGenerator(db).generate()
+            }
+            Toast.makeText(context, "가상 데이터 생성 완료!", Toast.LENGTH_SHORT).show()
+        }) {
+            Text("2. 가상 데이터 생성 (Mock)")
+        }
+
+        Spacer(modifier = Modifier.height(10.dp))
+
+        // 3. 실제 사용 시간 수집 버튼 (UsageManager)
+        Button(onClick = {
             if (hasUsageStatsPermission(context)) {
-                // 유튜브 패키지명: com.google.android.youtube
-                val time = getAppUsageTime(context, "com.google.android.youtube")
-                usageResult = "오늘 유튜브 사용 시간: $time"
+                CoroutineScope(Dispatchers.IO).launch {
+                    UsageManager(context).collectUsageStats()
+                }
+                Toast.makeText(context, "실제 사용 시간 수집 완료!", Toast.LENGTH_SHORT).show()
             } else {
-                usageResult = "먼저 권한을 허용해주세요!"
-                Toast.makeText(context, "사용 정보 접근 권한이 필요합니다.", Toast.LENGTH_SHORT).show()
+                Toast.makeText(context, "권한이 없습니다.", Toast.LENGTH_SHORT).show()
             }
         }) {
-            Text(text = "오늘 유튜브 사용시간 조회")
+            Text("3. 실제 사용 시간 수집")
         }
 
-        Spacer(modifier = Modifier.height(20.dp))
+        Spacer(modifier = Modifier.height(10.dp))
 
-        // 3. 결과 텍스트
-        Text(text = usageResult)
+        // 4. 서버 분석 버튼 (Retrofit)
+        Button(onClick = {
+            sendDataToServer(db)
+            Toast.makeText(context, "Logcat에서 'API_TEST'를 확인하세요!", Toast.LENGTH_LONG).show()
+        }) {
+            Text("4. 서버로 보내고 분석하기 (Start)")
+        }
     }
 }
 
-// 1. 권한이 있는지 확인하고 없으면 설정 화면으로 보내는 함수
-fun checkAndRequestPermissions(context: Context) {
-    // (1) 알림 접근 권한 (결제 문자 읽기용)
-    if (!isNotificationServiceEnabled(context)) {
-        Toast.makeText(context, "알림 접근 권한을 켜주세요!", Toast.LENGTH_LONG).show()
-        context.startActivity(Intent("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS"))
-    } else {
-        Toast.makeText(context, "알림 권한은 이미 있습니다.", Toast.LENGTH_SHORT).show()
-    }
+// 서버로 데이터를 보내는 로직
+fun sendDataToServer(db: AppDatabase) {
+    CoroutineScope(Dispatchers.IO).launch {
+        // (1) DB에서 데이터 꺼내오기
+        val logs = db.userDao().getAllLogs()
 
-    // (2) 사용 정보 접근 권한 (앱 사용 시간용)
+        if (logs.isEmpty()) {
+            Log.e("API_TEST", "❌ 보낼 데이터가 없습니다. 2번 버튼을 먼저 누르세요!")
+            return@launch
+        }
+
+        // (2) 서버 양식에 맞게 변환
+        val logMaps = logs.map { entity ->
+            mapOf(
+                "serviceName" to entity.serviceName,
+                "cost" to entity.cost,
+                "timeMinutes" to entity.timeMinutes,
+
+                // 👇 [변경] 이제 진짜 category 컬럼의 값을 보냅니다!
+                "category" to entity.category,
+
+                // 👇 [추가] 횟수 정보도 서버로 보냅니다!
+                "payment_count" to entity.paymentCount
+            )
+        }
+
+        val requestData = AnalyzeRequest(logs = logMaps)
+
+        // (3) 서버 전송 (Retrofit)
+        RetrofitClient.instance.analyzeData(requestData).enqueue(object : Callback<AnalyzeResponse> {
+            override fun onResponse(call: Call<AnalyzeResponse>, response: Response<AnalyzeResponse>) {
+                if (response.isSuccessful) {
+                    val result = response.body()
+                    Log.d("API_TEST", "✅ 분석 성공!")
+                    Log.d("API_TEST", "👤 페르소나: ${result?.user_persona}")
+
+                    result?.inefficiency_report?.forEach {
+                        Log.d("API_TEST", "📢 [${it.service}] ${it.status}: ${it.reason}")
+                    }
+                } else {
+                    Log.e("API_TEST", "❌ 서버 에러: ${response.code()}")
+                }
+            }
+
+            override fun onFailure(call: Call<AnalyzeResponse>, t: Throwable) {
+                Log.e("API_TEST", "❌ 통신 실패: ${t.message}")
+            }
+        })
+    }
+}
+
+// 권한 체크 및 요청 함수
+fun checkAndRequestPermissions(context: Context) {
+    // 알림 권한
+    if (!isNotificationServiceEnabled(context)) {
+        Toast.makeText(context, "알림 권한을 켜주세요", Toast.LENGTH_SHORT).show()
+        context.startActivity(Intent("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS"))
+    }
+    // 사용 정보 권한
     if (!hasUsageStatsPermission(context)) {
-        Toast.makeText(context, "사용 추적 권한을 켜주세요!", Toast.LENGTH_LONG).show()
+        Toast.makeText(context, "사용 정보 권한을 켜주세요", Toast.LENGTH_SHORT).show()
         context.startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS))
     }
 }
 
-// 2. 특정 앱의 오늘 사용 시간 가져오는 함수
-fun getAppUsageTime(context: Context, targetPackageName: String): String {
-    val usageStatsManager = context.getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
-
-    // 시간 범위: 오늘 0시 ~ 현재
-    val calendar = Calendar.getInstance()
-    val endTime = calendar.timeInMillis
-    calendar.set(Calendar.HOUR_OF_DAY, 0)
-    calendar.set(Calendar.MINUTE, 0)
-    calendar.set(Calendar.SECOND, 0)
-    val startTime = calendar.timeInMillis
-
-    val usageStatsList = usageStatsManager.queryUsageStats(
-        UsageStatsManager.INTERVAL_DAILY, startTime, endTime
-    )
-
-    // 해당 패키지 찾기
-    val stats = usageStatsList.find { it.packageName == targetPackageName }
-
-    return if (stats != null) {
-        val totalSeconds = stats.totalTimeInForeground / 1000
-        val min = totalSeconds / 60
-        val sec = totalSeconds % 60
-        "${min}분 ${sec}초"
-    } else {
-        "사용 기록 없음 (0분)"
-    }
-}
-
-// 3. 알림 리스너 권한 체크 헬퍼
 fun isNotificationServiceEnabled(context: Context): Boolean {
     val pkgName = context.packageName
     val flat = Settings.Secure.getString(context.contentResolver, "enabled_notification_listeners")
     return flat != null && flat.contains(pkgName)
 }
 
-// 4. 사용 정보 접근 권한 체크 헬퍼
 fun hasUsageStatsPermission(context: Context): Boolean {
     val appOps = context.getSystemService(Context.APP_OPS_SERVICE) as AppOpsManager
     val mode = appOps.checkOpNoThrow(
