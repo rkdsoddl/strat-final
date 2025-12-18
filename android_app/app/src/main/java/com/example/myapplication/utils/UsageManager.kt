@@ -26,7 +26,7 @@ class UsageManager(private val context: Context) {
 
         val todayDate = SimpleDateFormat("yyyyMMdd", Locale.getDefault()).format(Date()).toLong()
 
-        // 권한이 없으면 빈 리스트를 반환함
+        // 권한이 없으면 빈 리스트를 반환
         val usageStats = usageStatsManager.queryUsageStats(
             UsageStatsManager.INTERVAL_DAILY, startTime, endTime
         )
@@ -63,9 +63,13 @@ class UsageManager(private val context: Context) {
                     packageName = pkg,
                     cost = 0,
                     timeMinutes = minutes,
-                    logType = "USAGE"
+                    logType = "USAGE",
+                    category = "USAGE",
+                    paymentCount = 0
                 )
-                db.userDao().insertLog(log)
+
+                // 리스트로 감싸서(listOf) 전달
+                db.userDao().insertLog(listOf(log))
             }
         }
     }

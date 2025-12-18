@@ -13,85 +13,140 @@ import kotlin.random.Random
 
 class MockDataGenerator(private val db: AppDatabase) {
 
+    enum class EfficiencyType {
+        TIME_BASED,   // 사용 시간 기준
+        COUNT_BASED   // 사용 횟수 기준
+    }
+
+    data class SubscriptionInfo(
+        val name: String,
+        val packageName: String,
+        val cost: Int,
+        val type: EfficiencyType,
+        val category: String
+    )
+
     suspend fun generate() = withContext(Dispatchers.IO) {
-        // 1. 기존 데이터 삭제
+        // 1. 기존 데이터 초기화
         db.userDao().clearAll()
 
         val mockList = mutableListOf<UserEntity>()
         val calendar = Calendar.getInstance()
 
-        // 2. 서비스 목록 정의
-        val services = listOf(
-            Triple("넷플릭스", "com.netflix.mediaclient", 13500),
-            Triple("유튜브", "com.google.android.youtube", 14900),
-            Triple("배달의민족", "com.woowahan.baemin", 0), // 기본값 0, 아래에서 랜덤 생성
-            Triple("쿠팡", "com.coupang.mobile", 4990),
-            Triple("멜론", "com.iloen.melon", 10900)
+        // =================================================================
+        // [1] 핵심 구독 서비스 5개 정의
+        // =================================================================
+        val subscriptions = listOf(
+            SubscriptionInfo("넷플릭스", "com.netflix.mediaclient", 13500, EfficiencyType.TIME_BASED, "OTT"),
+            SubscriptionInfo("유튜브 프리미엄", "com.google.android.youtube", 14900, EfficiencyType.TIME_BASED, "OTT"),
+            SubscriptionInfo("멜론", "com.iloen.melon", 10900, EfficiencyType.TIME_BASED, "MUSIC"),
+            SubscriptionInfo("배민클럽", "com.woowahan.baemin", 3990, EfficiencyType.COUNT_BASED, "FOOD"),
+            SubscriptionInfo("쿠팡와우", "com.coupang.mobile", 4990, EfficiencyType.COUNT_BASED, "SHOPPING")
         )
 
-        // 3. 50개 생성 반복문 시작
-        repeat(50) {
-            // (1) 기본 정보 랜덤 선택
-            val target = services.random()
-            val name = target.first
-            val pkg = target.second
-            var baseCost = target.third
+        // 랜덤하게 2~3개는 '효율(잘 씀)', 나머지는 '비효율(낭비)'로 설정
+        val shuffledIndices = subscriptions.indices.shuffled()
+        val efficientIndices = shuffledIndices.take(3).toSet()
 
-            // 날짜 랜덤 생성
+        subscriptions.forEachIndexed { index, sub ->
+            val isEfficient = efficientIndices.contains(index)
+
+            // ---------------------------------------------------------
+            // (A) 월 구독료 결제 로그 생성 (1번만 발생)
+            // ---------------------------------------------------------
+            // 날짜: 25일~30일 전쯤 결제
             calendar.time = Date()
-            calendar.add(Calendar.DAY_OF_YEAR, -Random.nextInt(0, 30))
-            val randomDate = SimpleDateFormat("yyyyMMdd", Locale.getDefault()).format(calendar.time).toLong()
+            calendar.add(Calendar.DAY_OF_YEAR, -Random.nextInt(25, 30))
+            val paymentDate = SimpleDateFormat("yyyyMMdd", Locale.getDefault()).format(calendar.time).toLong()
 
-            // 1. 카테고리 결정 로직
-            val category = if (name == "넷플릭스" || name == "유튜브") "OTT"
-            else if (name == "멜론") "MUSIC"
-            else if (name == "배달의민족") "FOOD"
-            else "SHOPPING" // 쿠팡 등
-
-            // 2. 횟수 및 비용 결정 로직
-            var paymentCount = 1
-            var finalCost = baseCost
-            var minutes = 0
-
-            if (category == "FOOD" || category == "SHOPPING") {
-                // 배달/쇼핑은 횟수가 중요함 (1~5회 랜덤)
-                paymentCount = Random.nextInt(1, 6)
-
-                // 비용도 횟수만큼 뻥튀기 (예: 1회당 2만원 가정)
-                val unitPrice = Random.nextInt(15000, 30000)
-                finalCost = unitPrice * paymentCount
-
-                // 배달/쇼핑은 사용시간 0분 (보통 앱 사용시간보다 결제액이 중요하므로)
-                minutes = 0
-            } else {
-                // OTT/MUSIC은 구독형이라 횟수는 1회
+            mockList.add(UserEntity(
+                date = paymentDate,
+                serviceName = sub.name,
+                packageName = sub.packageName,
+                cost = sub.cost,        // 비용 발생 O
+                timeMinutes = 0,
+                logType = "SUB_PAYMENT",
+                category = sub.category,
                 paymentCount = 1
+            ))
 
-                // 사용 시간은 랜덤 (0분 ~ 3000분)
-                // 10% 확률로 '낭비' 패턴(사용시간 0) 생성
-                minutes = if (Random.nextInt(100) < 10) 0 else Random.nextInt(60, 3000)
+            // ---------------------------------------------------------
+            // (B) 실제 사용 로그 생성 (비용 0원, 사용량 누적)
+            // ---------------------------------------------------------
+            // 최근 30일간의 사용 패턴 시뮬레이션
+            for (day in 30 downTo 1) {
+                calendar.time = Date()
+                calendar.add(Calendar.DAY_OF_YEAR, -day)
+                val usageDate = SimpleDateFormat("yyyyMMdd", Locale.getDefault()).format(calendar.time).toLong()
+
+                // 서비스 타입별 확률 분리
+                val useProbability = if (sub.type == EfficiencyType.TIME_BASED) {
+                    // [시간 기반] 넷플릭스, 멜론 등
+                    // 효율: 0.8 (30일 중 약 24일 사용 -> 자주 씀)
+                    // 비효율: 0.1 (30일 중 약 3일 사용 -> 거의 안 씀)
+                    if (isEfficient) 0.8 else 0.1
+                } else {
+                    // [횟수 기반] 쿠팡, 배민
+                    // 효율: 0.28 (30일 * 0.28 = 약 8.4회)
+                    // 비효율: 0.05 (30일 * 0.05 = 약 1.5회)
+                    if (isEfficient) 0.28 else 0.05
+                }
+
+                if (Random.nextDouble() < useProbability) {
+                    var minutes = 0
+                    var count = 0
+
+                    if (sub.type == EfficiencyType.TIME_BASED) {
+                        // 시간 기반: 하루 1~3시간(60~180분) 사용
+                        minutes = if (isEfficient) Random.nextInt(60, 180) else Random.nextInt(5, 15)
+                        count = 1
+                    } else {
+                        // 횟수 기반: 사용 시간은 짧음
+                        minutes = 10
+                        count = 1
+                    }
+
+                    mockList.add(UserEntity(
+                        date = usageDate,
+                        serviceName = sub.name,
+                        packageName = sub.packageName,
+                        cost = 0, // 사용 시에는 비용 0
+                        timeMinutes = minutes,
+                        logType = "SUB_USAGE",
+                        category = sub.category,
+                        paymentCount = count
+                    ))
+                }
             }
-
-            // 3. UserEntity 생성 및 리스트 추가
-            mockList.add(
-                UserEntity(
-                    date = randomDate,
-                    serviceName = name,
-                    packageName = pkg,
-                    cost = finalCost,       // 계산된 최종 비용
-                    timeMinutes = minutes,  // 계산된 시간
-                    logType = "MOCK",       // 식별자
-
-                    // 👇 새로 추가한 컬럼에 값 넣기
-                    category = category,
-                    paymentCount = paymentCount
-                )
-            )
-            // ---------------------------------------------------------------
         }
 
-        // 4. DB 저장
-        mockList.forEach { db.userDao().insertLog(it) }
-        Log.d("MockCheck", "✅ 가상 데이터 50개 생성 완료 (카테고리/횟수 포함)")
+        // =================================================================
+        // [2] 파이차트를 위한 기타 지출 데이터 (구독 외)
+        // =================================================================
+        val others = listOf(
+            "스타벅스" to "FOOD", "GS25" to "SHOPPING", "카카오택시" to "TRANSPORT", "올리브영" to "SHOPPING"
+        )
+
+        repeat(20) {
+            val (name, cat) = others.random()
+            calendar.time = Date()
+            calendar.add(Calendar.DAY_OF_YEAR, -Random.nextInt(1, 30))
+            val d = SimpleDateFormat("yyyyMMdd", Locale.getDefault()).format(calendar.time).toLong()
+
+            mockList.add(UserEntity(
+                date = d,
+                serviceName = name,
+                packageName = "",
+                cost = Random.nextInt(5000, 20000),
+                timeMinutes = 0,
+                logType = "SPENDING",
+                category = cat,
+                paymentCount = 1
+            ))
+        }
+
+        // DB에 일괄 저장
+        db.userDao().insertLog(mockList)
+        Log.d("MockData", "✅ 스마트 데이터 생성 완료: ${mockList.size}건 (구독 5종 + 기타 지출)")
     }
 }

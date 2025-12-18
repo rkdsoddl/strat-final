@@ -1,193 +1,329 @@
 package com.example.myapplication
 
-import android.app.AppOpsManager
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.content.Context
-import android.content.Intent
+import android.os.Build
 import android.os.Bundle
-import android.os.Process
-import android.provider.Settings
 import android.util.Log
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.activity.enableEdgeToEdge
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.Button
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import com.example.myapplication.data.api.AnalyzeRequest
-import com.example.myapplication.data.api.AnalyzeResponse
-import com.example.myapplication.data.api.RetrofitClient
+import androidx.compose.ui.unit.sp
+import androidx.core.app.NotificationCompat
+import com.example.myapplication.data.api.*
 import com.example.myapplication.data.db.AppDatabase
-import com.example.myapplication.ui.theme.MyApplicationTheme
 import com.example.myapplication.utils.MockDataGenerator
 import com.example.myapplication.utils.UsageManager
-import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import retrofit2.Call
-import retrofit2.Callback
-import retrofit2.Response
+import kotlinx.coroutines.withContext
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
-
-        // DB 인스턴스 미리 생성
-        val db = AppDatabase.getDatabase(this)
-
+        val usageManager = UsageManager(this)
+        kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch {
+            usageManager.collectUsageStats()
+        }
         setContent {
-            MyApplicationTheme {
-                Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
-                    MainScreen(
-                        db = db,
-                        modifier = Modifier.padding(innerPadding)
-                    )
-                }
-            }
+            MyApplicationTheme { MainScreen() }
         }
     }
 }
 
 @Composable
-fun MainScreen(db: AppDatabase, modifier: Modifier = Modifier) {
+fun MyApplicationTheme(content: @Composable () -> Unit) {
+    MaterialTheme(
+        colorScheme = lightColorScheme(primary = Color(0xFF6200EE), secondary = Color(0xFF03DAC5)),
+        content = content
+    )
+}
+
+@Composable
+fun MainScreen() {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val db = remember { AppDatabase.getDatabase(context) }
+    var analysisResult by remember { mutableStateOf<AnalysisResponse?>(null) }
+    var isLoading by remember { mutableStateOf(false) }
 
     Column(
-        modifier = modifier.fillMaxSize(),
+        modifier = Modifier.fillMaxSize().padding(16.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
-        // 1. 권한 설정 버튼 (기존 유지)
-        Button(onClick = { checkAndRequestPermissions(context) }) {
-            Text("1. 권한 설정 (필수)")
-        }
+        Text("💰 SUBFIT", fontSize = 28.sp, fontWeight = FontWeight.Bold, color = Color(0xFF6200EE))
+        Spacer(modifier = Modifier.height(32.dp))
 
-        Spacer(modifier = Modifier.height(10.dp))
-
-        // 2. 가상 데이터 생성 버튼 (Mock)
-        Button(onClick = {
-            CoroutineScope(Dispatchers.IO).launch {
-                MockDataGenerator(db).generate()
-            }
-            Toast.makeText(context, "가상 데이터 생성 완료!", Toast.LENGTH_SHORT).show()
-        }) {
-            Text("2. 가상 데이터 생성 (Mock)")
-        }
-
-        Spacer(modifier = Modifier.height(10.dp))
-
-        // 3. 실제 사용 시간 수집 버튼 (UsageManager)
-        Button(onClick = {
-            if (hasUsageStatsPermission(context)) {
-                CoroutineScope(Dispatchers.IO).launch {
-                    UsageManager(context).collectUsageStats()
+        Button(
+            onClick = {
+                scope.launch {
+                    MockDataGenerator(db).generate()
+                    Toast.makeText(context, "가상 데이터 생성 완료!", Toast.LENGTH_SHORT).show()
                 }
-                Toast.makeText(context, "실제 사용 시간 수집 완료!", Toast.LENGTH_SHORT).show()
-            } else {
-                Toast.makeText(context, "권한이 없습니다.", Toast.LENGTH_SHORT).show()
-            }
-        }) {
-            Text("3. 실제 사용 시간 수집")
+            },
+            modifier = Modifier.fillMaxWidth().height(56.dp)
+        ) {
+            Text("🛠️ 1. 데이터 생성")
         }
 
-        Spacer(modifier = Modifier.height(10.dp))
+        Spacer(modifier = Modifier.height(16.dp))
 
-        // 4. 서버 분석 버튼 (Retrofit)
-        Button(onClick = {
-            sendDataToServer(db)
-            Toast.makeText(context, "Logcat에서 'API_TEST'를 확인하세요!", Toast.LENGTH_LONG).show()
-        }) {
-            Text("4. 서버로 보내고 분석하기 (Start)")
-        }
-    }
-}
+        Button(
+            onClick = {
+                scope.launch {
+                    isLoading = true
+                    try {
+                        val logs = withContext(Dispatchers.IO) { db.userDao().getAllLogs() }
+                        if (logs.isEmpty()) {
+                            Toast.makeText(context, "데이터가 없습니다.", Toast.LENGTH_SHORT).show()
+                            isLoading = false
+                            return@launch
+                        }
+                        val requestData = logs.map {
+                            LogData(it.date, it.serviceName, it.category, it.cost, it.timeMinutes, it.paymentCount, it.logType)
+                        }
 
-// 서버로 데이터를 보내는 로직
-fun sendDataToServer(db: AppDatabase) {
-    CoroutineScope(Dispatchers.IO).launch {
-        // (1) DB에서 데이터 꺼내오기
-        val logs = db.userDao().getAllLogs()
+                        // 서버 요청
+                        val response = RetrofitClient.api.analyzeData(AnalysisRequest(requestData))
+                        analysisResult = response
 
-        if (logs.isEmpty()) {
-            Log.e("API_TEST", "❌ 보낼 데이터가 없습니다. 2번 버튼을 먼저 누르세요!")
-            return@launch
-        }
-
-        // (2) 서버 양식에 맞게 변환
-        val logMaps = logs.map { entity ->
-            mapOf(
-                "serviceName" to entity.serviceName,
-                "cost" to entity.cost,
-                "timeMinutes" to entity.timeMinutes,
-
-                "category" to entity.category,
-                
-                "payment_count" to entity.paymentCount
-            )
-        }
-
-        val requestData = AnalyzeRequest(logs = logMaps)
-
-        // (3) 서버 전송 (Retrofit)
-        RetrofitClient.instance.analyzeData(requestData).enqueue(object : Callback<AnalyzeResponse> {
-            override fun onResponse(call: Call<AnalyzeResponse>, response: Response<AnalyzeResponse>) {
-                if (response.isSuccessful) {
-                    val result = response.body()
-                    Log.d("API_TEST", "✅ 분석 성공!")
-                    Log.d("API_TEST", "👤 페르소나: ${result?.user_persona}")
-
-                    result?.inefficiency_report?.forEach {
-                        Log.d("API_TEST", "📢 [${it.service}] ${it.status}: ${it.reason}")
+                        // 알림 로직
+                        val warnings = response.monthlyReport.filter { it.alertLevel == "WARNING" }
+                        if (warnings.isNotEmpty()) {
+                            sendNotification(context, "🚨 구독 낭비 경고", "${warnings[0].service} 외 ${warnings.size-1}건 낭비 중!")
+                        } else {
+                            // 추천 메시지 알림
+                            sendNotification(context, "💡 AI 추천 도착", response.recommendation)
+                        }
+                    } catch (e: Exception) {
+                        Log.e("API", "Error", e)
+                        Toast.makeText(context, "분석 실패: ${e.message}", Toast.LENGTH_LONG).show()
+                    } finally {
+                        isLoading = false
                     }
+                }
+            },
+            modifier = Modifier.fillMaxWidth().height(56.dp),
+            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF018786))
+        ) {
+            if (isLoading) {
+                CircularProgressIndicator(color = Color.White, modifier = Modifier.size(24.dp))
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("AI 분석 중...")
+            } else {
+                Text("📊 2. AI 소비 분석 시작")
+            }
+        }
+    }
+
+    if (analysisResult != null) {
+        AnalysisResultDialog(result = analysisResult!!, onDismiss = { analysisResult = null })
+    }
+}
+
+fun sendNotification(context: Context, title: String, message: String) {
+    val channelId = "sub_alert_channel"
+    val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        val channel = NotificationChannel(channelId, "구독 알림", NotificationManager.IMPORTANCE_HIGH)
+        notificationManager.createNotificationChannel(channel)
+    }
+    val notification = NotificationCompat.Builder(context, channelId)
+        .setSmallIcon(android.R.drawable.ic_dialog_info)
+        .setContentTitle(title)
+        .setContentText(message)
+        .setPriority(NotificationCompat.PRIORITY_HIGH)
+        .setAutoCancel(true)
+        .build()
+    notificationManager.notify(System.currentTimeMillis().toInt(), notification)
+}
+
+// ==========================================
+// [UI] 분석 결과 다이얼로그
+// 주간 -> 월간 -> 페르소나 -> 추천 -> 파이차트
+// ==========================================
+@Composable
+fun AnalysisResultDialog(result: AnalysisResponse, onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text("📊 AI 분석 리포트", fontWeight = FontWeight.Bold, fontSize = 20.sp)
+        },
+        text = {
+            LazyColumn(
+                verticalArrangement = Arrangement.spacedBy(16.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                // 1. [주간 리포트] (가장 먼저)
+                item {
+                    Text("📅 주간 리포트 (Weekly)", fontWeight = FontWeight.Bold, color = Color(0xFF6200EE))
+                    Divider(modifier = Modifier.padding(vertical = 4.dp))
+                }
+                if (result.weeklyReport.isEmpty()) {
+                    item { Text("주간 데이터 없음", fontSize = 12.sp, color = Color.Gray) }
                 } else {
-                    Log.e("API_TEST", "❌ 서버 에러: ${response.code()}")
+                    items(result.weeklyReport) { item ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text("• ${item.service}", fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                            Text(item.message, fontSize = 13.sp, color = Color.Gray)
+                        }
+                    }
+                }
+
+                // 2. [월간 리포트] (효율/비효율 분석)
+                item {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text("📋 월간 구독 효율 (Monthly)", fontWeight = FontWeight.Bold, color = Color(0xFF6200EE))
+                    Divider(modifier = Modifier.padding(vertical = 4.dp))
+                }
+                if (result.monthlyReport.isEmpty()) {
+                    item { Text("구독 데이터 없음", fontSize = 12.sp, color = Color.Gray) }
+                } else {
+                    items(result.monthlyReport) { item ->
+                        ReportRow(item)
+                    }
+                }
+
+                // 3. [페르소나 분석]
+                item {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = Color(0xFFE8EAF6)),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(modifier = Modifier.padding(16.dp)) {
+                            Text("👤 나의 페르소나", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = Color.Gray)
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(result.persona, fontWeight = FontWeight.ExtraBold, fontSize = 20.sp, color = Color(0xFF3F51B5))
+                        }
+                    }
+                }
+
+                // 4. [구독 서비스 추천] (지출 기반 맞춤 추천)
+                item {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text("💡 AI 맞춤 추천", fontWeight = FontWeight.Bold, color = Color(0xFF6200EE))
+
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = Color(0xFFE3F2FD)),
+                        modifier = Modifier.fillMaxWidth().padding(top=8.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(16.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("🤖", fontSize = 24.sp)
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Text(
+                                text = result.recommendation,
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.Medium,
+                                lineHeight = 20.sp
+                            )
+                        }
+                    }
+                }
+
+                // 5. [파이차트]
+                item {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text("💰 지출 분석 (Pie Chart)", fontWeight = FontWeight.Bold, color = Color(0xFF6200EE))
+                    Divider(modifier = Modifier.padding(vertical = 4.dp))
+
+                    if (result.pieChart.isNotEmpty()) {
+                        SimplePieChart(data = result.pieChart)
+                    } else {
+                        Text("지출 데이터 부족", fontSize = 12.sp, color = Color.Gray)
+                    }
                 }
             }
-
-            override fun onFailure(call: Call<AnalyzeResponse>, t: Throwable) {
-                Log.e("API_TEST", "❌ 통신 실패: ${t.message}")
-            }
-        })
-    }
-}
-
-// 권한 체크 및 요청 함수
-fun checkAndRequestPermissions(context: Context) {
-    // 알림 권한
-    if (!isNotificationServiceEnabled(context)) {
-        Toast.makeText(context, "알림 권한을 켜주세요", Toast.LENGTH_SHORT).show()
-        context.startActivity(Intent("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS"))
-    }
-    // 사용 정보 권한
-    if (!hasUsageStatsPermission(context)) {
-        Toast.makeText(context, "사용 정보 권한을 켜주세요", Toast.LENGTH_SHORT).show()
-        context.startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS))
-    }
-}
-
-fun isNotificationServiceEnabled(context: Context): Boolean {
-    val pkgName = context.packageName
-    val flat = Settings.Secure.getString(context.contentResolver, "enabled_notification_listeners")
-    return flat != null && flat.contains(pkgName)
-}
-
-fun hasUsageStatsPermission(context: Context): Boolean {
-    val appOps = context.getSystemService(Context.APP_OPS_SERVICE) as AppOpsManager
-    val mode = appOps.checkOpNoThrow(
-        AppOpsManager.OPSTR_GET_USAGE_STATS,
-        Process.myUid(), context.packageName
+        },
+        confirmButton = {
+            Button(onClick = onDismiss) { Text("확인") }
+        }
     )
-    return mode == AppOpsManager.MODE_ALLOWED
+}
+
+@Composable
+fun ReportRow(item: ReportItem) {
+    val isWarning = item.alertLevel == "WARNING"
+    val isGood = item.alertLevel == "GOOD"
+
+    val bgColor = when {
+        isWarning -> Color(0xFFFFEBEE)
+        isGood -> Color(0xFFE8F5E9)
+        else -> Color(0xFFF5F5F5)
+    }
+
+    Card(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+        colors = CardDefaults.cardColors(containerColor = bgColor),
+        elevation = CardDefaults.cardElevation(1.dp)
+    ) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text(item.service, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                Text(item.status, color = if(isWarning) Color.Red else Color(0xFF2E7D32), fontWeight = FontWeight.Bold, fontSize = 13.sp)
+            }
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(item.message, fontSize = 13.sp, color = Color.DarkGray) // "평균보다 30% 더 씀"
+            Spacer(modifier = Modifier.height(2.dp))
+            Text(item.detail, fontSize = 11.sp, color = Color.Gray) // "월 2시간 30분 사용"
+        }
+    }
+}
+
+@Composable
+fun SimplePieChart(data: List<PieChartItem>) {
+    val chartColors = listOf(
+        Color(0xFFEF5350), Color(0xFF42A5F5), Color(0xFF66BB6A),
+        Color(0xFFFFA726), Color(0xFFAB47BC), Color(0xFF8D6E63)
+    )
+    Row(modifier = Modifier.fillMaxWidth().height(140.dp).padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
+        Box(modifier = Modifier.weight(1f).aspectRatio(1f)) {
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                var startAngle = -90f
+                data.forEachIndexed { index, item ->
+                    val sweepAngle = (item.percent.toFloat() / 100f) * 360f
+                    drawArc(color = chartColors[index % chartColors.size], startAngle = startAngle, sweepAngle = sweepAngle, useCenter = true)
+                    startAngle += sweepAngle
+                }
+            }
+        }
+        Spacer(modifier = Modifier.width(16.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            data.take(5).forEachIndexed { index, item ->
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(modifier = Modifier.size(10.dp).background(chartColors[index % chartColors.size], CircleShape))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(item.category, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    Spacer(modifier = Modifier.weight(1f))
+                    Text("${item.percent.toInt()}%", fontSize = 12.sp, color = Color.Gray)
+                }
+                Spacer(modifier = Modifier.height(4.dp))
+            }
+        }
+    }
 }

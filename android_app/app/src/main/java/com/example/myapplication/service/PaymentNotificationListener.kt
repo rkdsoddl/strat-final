@@ -25,34 +25,30 @@ class PaymentNotificationListener : NotificationListenerService() {
         // 로그 확인용
         Log.d("NotiListener", "앱: $packageName | 내용: $text")
 
-        // 1. 결제 키워드가 있는지 확인 (은행, 카드사마다 다를 수 있음)
+        // 1. 결제 키워드가 있는지 확인
         if (text.contains("승인") || text.contains("출금") || text.contains("결제")) {
 
             // 2. 금액 추출 (숫자와 ,원 만 찾아서 숫자로 변환)
-            // 예: "13,500원 승인" -> 13500
             val amountRegex = Regex("[0-9,]+원")
             val amountMatch = amountRegex.find(text)
             val amountStr = amountMatch?.value?.replace(",", "")?.replace("원", "")
             val cost = amountStr?.toIntOrNull() ?: 0
 
             if (cost > 0) {
-                // 3. 서비스명 파악 (여기가 핵심! Pandas가 이 이름을 씁니다)
+                // 3. 서비스명 파악
                 var serviceName = "기타"
 
-                // [규칙 정의] 문자에 '우아한형제들'이 있으면 -> 배달의민족
                 if (text.contains("우아한형제들") || text.contains("배달의민족")) {
                     serviceName = "배달의민족"
                 }
-                // [규칙 정의] 넷플릭스
                 else if (text.contains("넷플릭스") || text.contains("Netflix")) {
                     serviceName = "넷플릭스"
                 }
-                // [규칙 정의] 유튜브
                 else if (text.contains("Google") || text.contains("유튜브")) {
                     serviceName = "유튜브"
                 }
 
-                // 만약 우리가 관심 있는 서비스라면 DB에 저장!
+                // 관심 있는 서비스라면 DB에 저장
                 if (serviceName != "기타") {
                     saveToDb(serviceName, packageName, cost)
                 }
@@ -71,10 +67,15 @@ class PaymentNotificationListener : NotificationListenerService() {
                 serviceName = service,
                 packageName = pkg,
                 cost = money,
-                timeMinutes = 0, // 결제 로그니까 시간은 0
-                logType = "PAYMENT"
+                timeMinutes = 0, // 결제 로그, 시간은 0
+                logType = "PAYMENT",
+                category = "REALTIME",
+                paymentCount = 1
             )
-            db.userDao().insertLog(log)
+
+            // log(한 개)를 listOf(log)로 감싸서 리스트 형태로 전달
+            db.userDao().insertLog(listOf(log))
+
             Log.d("NotiListener", "DB 저장 완료: $service, $money 원")
         }
     }
